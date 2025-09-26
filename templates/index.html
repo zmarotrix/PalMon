@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Palworld Server Monitor</title>
+    <style>
+        :root { 
+            --bg: #1a1a1a; --card-bg: #2c2c2c; --text: #e0e0e0; 
+            --text-muted: #888; --border: #444; --healthy: #28a745; 
+            --unhealthy: #dc3545; --starting: #ffc107; 
+        }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; 
+            background-color: var(--bg); color: var(--text); margin: 0; padding: 2rem; 
+        }
+        .container { max-width: 800px; margin: 0 auto; }
+        h1 { text-align: center; margin-bottom: 0.5rem; }
+        .footer { text-align: center; color: var(--text-muted); margin-top: -0.5rem; margin-bottom: 2rem; font-size: 0.9rem; }
+        .card { 
+            background-color: var(--card-bg); border-radius: 8px; padding: 1.5rem; 
+            margin-bottom: 1.5rem; border: 1px solid var(--border); 
+        }
+        .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1.5rem; text-align: center; }
+        .metrics-item h2 { margin-top: 0; font-size: 1rem; color: var(--text-muted); font-weight: normal; text-transform: uppercase; }
+        .metrics-value { font-size: 2rem; font-weight: bold; }
+        .metrics-value.Healthy { color: var(--healthy); } 
+        .metrics-value.Unhealthy { color: var(--unhealthy); } 
+        .metrics-value.Starting, .metrics-value.Initializing, .metrics-value.Restarting { color: var(--starting); }
+        #player-list-container li { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid var(--border); }
+        #player-list-container li:last-child { border-bottom: none; }
+        .player-actions button { 
+            background-color: #555; color: var(--text); border: none; padding: 5px 10px; 
+            border-radius: 4px; cursor: pointer; margin-left: 5px; 
+        }
+        .player-actions button.kick { background-color: #ffc107; color: #000; } 
+        .player-actions button.ban { background-color: #dc3545; }
+        #admin-panel { display: none; }
+        .form-group { display: flex; gap: 10px; margin-bottom: 10px; }
+        .form-group input { 
+            flex-grow: 1; background-color: #333; border: 1px solid var(--border); 
+            color: var(--text); padding: 8px; border-radius: 4px; 
+        }
+        .form-group button, .server-actions button { 
+            background-color: #0d6efd; color: var(--text); border: none; 
+            padding: 8px 15px; border-radius: 4px; cursor: pointer; 
+        }
+        .server-actions { display: flex; gap: 10px; justify-content: flex-end; } 
+        .server-actions .shutdown { background-color: #dc3545; }
+        .server-actions .refresh-now { background-color: #6c757d; margin-right: auto; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 id="server-name">Loading...</h1>
+        <p class="footer">Last Checked: <span id="last-checked">N/A</span> <span id="auth-status">| <a href="#" onclick="login()">Login to Admin</a></span></p>
+
+        <div class="card metrics-grid">
+            <div class="metrics-item"><h2>Status</h2><div class="metrics-value" id="status">N/A</div></div>
+            <div class="metrics-item"><h2>Players</h2><div class="metrics-value" id="player-string">N/A</div></div>
+            <div class="metrics-item"><h2>Server FPS</h2><div class="metrics-value" id="server-fps">N/A</div></div>
+            <div class="metrics-item"><h2>Uptime</h2><div class="metrics-value" id="uptime-string">N/A</div></div>
+        </div>
+
+        <div class="card">
+            <h2>Online Players</h2>
+            <ul id="player-list-container"><li>No players currently online.</li></ul>
+        </div>
+
+        <div id="admin-panel" class="card">
+            <h2>Admin Panel</h2>
+            <div class="form-group">
+                <input type="text" id="broadcast-message" placeholder="Send a message to all players...">
+                <button onclick="broadcast()">Announce</button>
+            </div>
+            <hr style="border-color: var(--border); margin: 1.5rem 0;">
+            <div class="server-actions">
+                <button id="refresh-button" class="refresh-now" onclick="manualRefresh()">Refresh Now</button>
+                <button class="shutdown" onclick="shutdownServer()">Graceful Shutdown</button>
+                <button onclick="restartServer()">Restart Server</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let isAdmin = false;
+
+        async function postAction(url, body) {
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                if (!response.ok) {
+                    alert(`Action failed: ${response.statusText}`);
+                }
+                return response.ok;
+            } catch (error) {
+                alert(`Action failed: ${error}`);
+                return false;
+            }
+        }
+
+        function kickPlayer(userId, playerName) {
+            if (confirm(`Are you sure you want to kick ${playerName}?`)) {
+                postAction('/actions/kick', { userId });
+            }
+        }
+        function banPlayer(userId, playerName) {
+            if (confirm(`Are you sure you want to BAN ${playerName}?`)) {
+                postAction('/actions/ban', { userId });
+            }
+        }
+        function broadcast() {
+            const message = document.getElementById('broadcast-message').value;
+            if (message) {
+                postAction('/actions/broadcast', { message });
+                document.getElementById('broadcast-message').value = '';
+            }
+        }
+        function shutdownServer() {
+            if (confirm('Are you sure you want to shut down the server? This will NOT automatically restart it.')) {
+                postAction('/actions/shutdown', {});
+            }
+        }
+        function restartServer() {
+            if (confirm('Are you sure you want to restart the server? It will perform a graceful shutdown.')) {
+                postAction('/actions/restart', {});
+            }
+        }
+        
+        async function login() {
+            try {
+                const response = await fetch('/api/authcheck');
+                if (response.ok) {
+                    isAdmin = true;
+                    document.getElementById('admin-panel').style.display = 'block';
+                    document.getElementById('auth-status').innerHTML = '| Logged in as Admin';
+                    refreshData();
+                }
+            } catch (error) {
+                console.error('Auth check failed:', error);
+            }
+        }
+
+        async function manualRefresh() {
+            const btn = document.getElementById('refresh-button');
+            btn.disabled = true;
+            btn.textContent = 'Refreshing...';
+            
+            await postAction('/actions/refresh', {});
+            await refreshData();
+
+            setTimeout(() => {
+                btn.disabled = false;
+                btn.textContent = 'Refresh Now';
+            }, 500);
+        }
+
+        async function refreshData() {
+            try {
+                const response = await fetch('/api/publicinfo');
+                const data = await response.json();
+                
+                document.getElementById('server-name').textContent = data.ServerName;
+                document.getElementById('last-checked').textContent = data.LastChecked;
+                document.getElementById('status').textContent = data.Status;
+                document.getElementById('status').className = 'metrics-value ' + data.Status;
+                document.getElementById('player-string').textContent = data.PlayerString;
+                document.getElementById('server-fps').textContent = data.ServerFPS;
+                document.getElementById('uptime-string').textContent = data.UptimeString;
+
+                const playerList = document.getElementById('player-list-container');
+                playerList.innerHTML = '';
+                if (data.Players && data.Players.length > 0) {
+                    data.Players.forEach(player => {
+                        const li = document.createElement('li');
+                        let adminButtons = '';
+                        if (isAdmin) {
+                            adminButtons = `<div class="player-actions"><button class="kick" onclick="kickPlayer('${player.UserID}', '${player.Name}')">Kick</button><button class="ban" onclick="banPlayer('${player.UserID}', '${player.Name}')">Ban</button></div>`;
+                        }
+                        li.innerHTML = `<span>${player.Name} <span style="color: var(--text-muted);">(Lvl ${player.Level})</span></span> ${adminButtons}`;
+                        playerList.appendChild(li);
+                    });
+                } else {
+                    playerList.innerHTML = '<li>No players currently online.</li>';
+                }
+            } catch (error) {
+                console.error('Failed to refresh data:', error);
+                document.getElementById('status').textContent = 'Error';
+                document.getElementById('status').className = 'metrics-value Unhealthy';
+            }
+        }
+        
+        document.addEventListener('DOMContentLoaded', () => {
+            refreshData();
+            setInterval(refreshData, 15000);
+        });
+    </script>
+</body>
+</html>

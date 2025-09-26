@@ -1,0 +1,28 @@
+{
+  "server": {
+    "path": "C:\\Path\\To\\Your\\PalServer",
+    "executable": "PalServer.exe"
+  },
+  "monitor": {
+    "startup_delay_seconds": 10,
+    "health_check_interval_seconds": 60,
+    "unhealthy_threshold": 3
+  },
+  "rcon": {
+    "address": "127.0.0.1:25575",
+    "password": "YourAdminPasswordHere"
+  },
+  "rest_api": {
+    "enabled": true,
+    "port": 8212
+  },
+  "web": {
+    "listen_address": "0.0.0.0:7777",
+    "page_title": "Palworld Server",
+    "username": "admin",
+    "password": "ChangeThisPassword"
+  },
+  "discord": {
+    "webhook_url": ""
+  }
+}
