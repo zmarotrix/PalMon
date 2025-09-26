@@ -178,9 +178,9 @@
                         const li = document.createElement('li');
                         let adminButtons = '';
                         if (isAdmin) {
-                            adminButtons = `<div class="player-actions"><button class="kick" onclick="kickPlayer('${player.UserID}', '${player.Name}')">Kick</button><button class="ban" onclick="banPlayer('${player.UserID}', '${player.Name}')">Ban</button></div>`;
+                            adminButtons = `<div class="player-actions"><button class="kick" onclick="kickPlayer('${player.userId}', '${player.name}')">Kick</button><button class="ban" onclick="banPlayer('${player.userId}', '${player.name}')">Ban</button></div>`;
                         }
-                        li.innerHTML = `<span>${player.Name} <span style="color: var(--text-muted);">(Lvl ${player.Level})</span></span> ${adminButtons}`;
+                        li.innerHTML = `<span>${player.name} <span style="color: var(--text-muted);">(Lvl ${player.level})</span></span> ${adminButtons}`;
                         playerList.appendChild(li);
                     });
                 } else {

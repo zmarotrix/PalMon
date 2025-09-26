@@ -17,9 +17,9 @@ type APIMetrics struct {
 }
 
 type APIPlayer struct {
-	Name   string `json:"name"`
-	Level  int    `json:"level"`
-	UserID string `json:"userId"`
+    Name   string `json:"name"`
+    Level  int    `json:"level"`
+    UserID string `json:"userId"`
 }
 
 type APIPlayers struct {
