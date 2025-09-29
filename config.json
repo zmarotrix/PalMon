@@ -1,12 +1,14 @@
 {
   "server": {
-    "path": "C:\\Path\\To\\Your\\PalServer",
-    "executable": "PalServer.exe"
+    "path": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PalServer",
+    "executable": "PalServer.exe",
+    "real_executable_name": "PalServer-Win64-Shipping-Cmd.exe"
   },
   "monitor": {
-    "startup_delay_seconds": 10,
-    "health_check_interval_seconds": 60,
-    "unhealthy_threshold": 3
+    "startup_delay_seconds": 5,
+    "health_check_interval_seconds": 20,
+    "unhealthy_threshold": 3,
+    "unhealthy_threshold": 5
   },
   "rcon": {
     "address": "127.0.0.1:25575",

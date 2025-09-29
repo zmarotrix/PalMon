@@ -1,17 +1,37 @@
 package main
 
+import (
+	"bufio"
+	"fmt"
+	"os"
+)
+
 func main() {
-	// --- Setup Logging ---
+	if err := run(); err != nil {
+		fmt.Printf("\n\n--- A FATAL ERROR OCCURRED ---\n")
+		fmt.Printf("ERROR: %v\n", err)
+		fmt.Printf("Press Enter to exit...")
+		bufio.NewReader(os.Stdin).ReadBytes('\n')
+	}
+}
+
+func run() error {
 	initLogging()
 
-	// --- Load Configuration ---
 	LogInfo.Println("Loading configuration from config.json...")
 	cfg, err := loadConfig("config.json")
 	if err != nil {
-		LogError.Fatalf("Failed to load config.json: %v", err)
+		return fmt.Errorf("failed to load config.json: %w", err)
 	}
 
-	// --- Start Services ---
-	go startWebServer(cfg)
-	runMonitor(cfg)
+	// Use a channel to listen for fatal errors from concurrent services
+	errChan := make(chan error, 2)
+
+	go startWebServer(cfg, errChan)
+	go runMonitor(cfg, errChan)
+
+	// Block until an error is received from either the web server or the monitor.
+	// This should never happen in normal operation.
+	err = <-errChan
+	return err
 }

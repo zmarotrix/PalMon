@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context" // <--- THIS IS THE FIX. The missing import has been added.
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -10,8 +11,15 @@ import (
 )
 
 // --- Authentication Middleware ---
-func authMiddleware(next http.Handler, cfg *Config) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		cfg, ok := r.Context().Value("config").(*Config)
+		if !ok {
+			log.Println("Error: config not found in context")
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
+
 		user, pass, ok := r.BasicAuth()
 		if !ok || user != cfg.Web.Username || pass != cfg.Web.Password {
 			w.Header().Set("WWW-Authenticate", `Basic realm="Restricted"`)
@@ -19,28 +27,29 @@ func authMiddleware(next http.Handler, cfg *Config) http.Handler {
 			w.Write([]byte("Unauthorized.\n"))
 			return
 		}
-		next.ServeHTTP(w, r)
-	})
+		next(w, r)
+	}
 }
 
 // --- Web Server Setup ---
-func startWebServer(cfg *Config) {
+func startWebServer(cfg *Config, errChan chan error) {
 	mux := http.NewServeMux()
-	tpl := template.Must(template.ParseFiles("templates/index.html"))
 
-	// --- Public Endpoint ---
+	// Public API endpoint
 	mux.HandleFunc("/api/publicinfo", handlePublicInfo(cfg))
 
-	// --- Admin-Only Endpoints ---
-	mux.Handle("/api/authcheck", authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }), cfg))
-	mux.Handle("/actions/kick", authMiddleware(http.HandlerFunc(handlePlayerAction("kick", cfg)), cfg))
-	mux.Handle("/actions/ban", authMiddleware(http.HandlerFunc(handlePlayerAction("ban", cfg)), cfg))
-	mux.Handle("/actions/broadcast", authMiddleware(http.HandlerFunc(handleBroadcast(cfg)), cfg))
-	mux.Handle("/actions/restart", authMiddleware(http.HandlerFunc(handleServerAction("restart")), cfg))
-	mux.Handle("/actions/shutdown", authMiddleware(http.HandlerFunc(handleServerAction("shutdown")), cfg))
-	mux.Handle("/actions/refresh", authMiddleware(http.HandlerFunc(handleRefresh()), cfg))
+	// Admin API endpoints (all protected by the auth middleware)
+	mux.HandleFunc("/api/authcheck", authMiddleware(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	mux.HandleFunc("/actions/kick", authMiddleware(handlePlayerAction("kick", cfg)))
+	mux.HandleFunc("/actions/ban", authMiddleware(handlePlayerAction("ban", cfg)))
+	mux.HandleFunc("/actions/broadcast", authMiddleware(handleBroadcast(cfg)))
+	mux.HandleFunc("/actions/restart", authMiddleware(handleServerAction("restart")))
+	mux.HandleFunc("/actions/shutdown", authMiddleware(handleServerAction("shutdown")))
+	mux.HandleFunc("/actions/start", authMiddleware(handleServerAction("start")))
+	mux.HandleFunc("/actions/refresh", authMiddleware(handleRefresh()))
 	
-	// --- Root handler for the HTML page ---
+	// Root handler for the HTML page
+	tpl := template.Must(template.ParseFiles("templates/index.html"))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -52,18 +61,25 @@ func startWebServer(cfg *Config) {
 		}
 	})
 
-	log.Printf("Web interface listening on http://%s", cfg.Web.ListenAddress)
-	if err := http.ListenAndServe(cfg.Web.ListenAddress, mux); err != nil {
-		log.Fatalf("Failed to start web server: %v", err)
+	// Create a handler that injects the config into the request context for the middleware
+	handlerWithConfig := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		ctx = context.WithValue(ctx, "config", cfg)
+		mux.ServeHTTP(w, r.WithContext(ctx))
+	})
+	
+	LogInfo.Printf("Web interface listening on http://%s", cfg.Web.ListenAddress)
+	if err := http.ListenAndServe(cfg.Web.ListenAddress, handlerWithConfig); err != nil {
+		errChan <- fmt.Errorf("failed to start web server: %w", err)
 	}
 }
 
-// --- Handler for Public Info ---
+// --- Handlers ---
 func handlePublicInfo(cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		status, serverName, players, maxPlayers, fps, uptime := state.GetFullState()
 		playerStr := "N/A"
-		if status == "Healthy" {
+		if status != "Unhealthy" && status != "Confirming" {
 			playerStr = fmt.Sprintf("%d / %d", len(players), maxPlayers)
 		}
 		if serverName == "" {
@@ -83,7 +99,6 @@ func handlePublicInfo(cfg *Config) http.HandlerFunc {
 	}
 }
 
-// --- Handlers for Admin Actions ---
 func handlePlayerAction(action string, cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var payload struct{ UserID string `json:"userId"` }
@@ -134,13 +149,12 @@ func handleServerAction(action string) http.HandlerFunc {
 func handleRefresh() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		responseChan := make(chan bool)
-		ForceCheckChan <- responseChan // Send the request to the monitor loop
-		<-responseChan                 // Wait until the monitor loop signals completion
+		ForceCheckChan <- responseChan
+		<-responseChan
 		w.WriteHeader(http.StatusOK)
 	}
 }
 
-// --- Helper Function ---
 func formatUptime(s uint64) string {
 	d := time.Duration(s) * time.Second
 	d = d.Round(time.Second)
