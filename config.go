@@ -7,8 +7,8 @@ import (
 
 type Config struct {
 	Server struct {
-		Path              string `json:"path"`
-		Executable        string `json:"executable"`
+		Path               string `json:"path"`
+		Executable         string `json:"executable"`
 		RealExecutableName string `json:"real_executable_name"`
 	} `json:"server"`
 	Monitor struct {
@@ -17,15 +17,10 @@ type Config struct {
 		RapidCheckIntervalSec int `json:"rapid_check_interval_seconds"`
 		UnhealthyThreshold    int `json:"unhealthy_threshold"`
 	} `json:"monitor"`
-	RCON struct { 
-		// Kept for backward compatibility with old config.json files
-		Address  string `json:"address"`
-		Password string `json:"password"`
-	} `json:"rcon"`
 	RestAPI struct {
-		Enabled       bool   `json:"enabled"`
-		Port          int    `json:"port"`
-		AdminPassword string `json:"admin_password"` // NEW for 1.0!
+		Enabled       bool   `json:"-"`
+		Port          int    `json:"-"`
+		AdminPassword string `json:"-"`
 	} `json:"rest_api"`
 	Web struct {
 		ListenAddress string `json:"listen_address"`
@@ -50,11 +45,10 @@ func loadConfig(path string) (*Config, error) {
 	return &config, nil
 }
 
-// GetAdminPassword safely transitions to the new 1.0 setting 
-// while keeping old configurations functional.
-func (c *Config) GetAdminPassword() string {
-	if c.RestAPI.AdminPassword != "" {
-		return c.RestAPI.AdminPassword
+func saveConfig(path string, config *Config) error {
+	file, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return err
 	}
-	return c.RCON.Password // Fallback to legacy setting
+	return os.WriteFile(path, file, 0644)
 }

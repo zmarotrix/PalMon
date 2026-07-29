@@ -10,11 +10,6 @@
     "rapid_check_interval_seconds": 15,
     "unhealthy_threshold": 3
   },
-  "rest_api": {
-    "enabled": true,
-    "port": 8212,
-    "admin_password": "YourAdminPasswordHere"
-  },
   "web": {
     "listen_address": "0.0.0.0:7777",
     "page_title": "Palworld Server",

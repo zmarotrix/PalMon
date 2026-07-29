@@ -64,7 +64,6 @@ func runMonitor(cfg *Config, errChan chan error) {
 			select { case <-processDone: LogInfo.Println("Launcher handle released.") 
 			case <-time.After(5 * time.Second): LogWarn.Println("Timeout waiting for launcher handle.") }
 
-			// *** PALWORLD 1.0 FIX: Halt loop on configuration error so we don't endlessly kill/restart! ***
 			if exitAction == "shutdown" || exitAction == "config_error" {
 				LogInfo.Println("Server halted. Entering STOPPED state.")
 				state.UpdateFullState("Stopped", state.ServerName, nil, 0, 0, 0)
@@ -111,7 +110,6 @@ func monitorLoop(cfg *Config, processDone chan error) (exitAction string, wasRes
 		case <-healthTickerChan:
 			isHealthy, err := runHealthCheck(cfg)
 			
-			// *** PALWORLD 1.0 FIX: Break the loop if password is wrong ***
 			if err != nil && strings.Contains(err.Error(), "Unauthorized") {
 				LogError.Println("CRITICAL: " + err.Error())
 				if healthTicker != nil { healthTicker.Stop() }; return "config_error", true
@@ -134,8 +132,7 @@ func monitorLoop(cfg *Config, processDone chan error) (exitAction string, wasRes
 			}
 
 		case respChan := <-ForceCheckChan:
-			LogInfo.Println("Manual health check triggered by admin.")
-			runHealthCheck(cfg) // Error ignored for manual trigger
+			LogInfo.Println("Manual health check triggered by admin."); runHealthCheck(cfg)
 			if healthTicker != nil { healthTicker.Reset(time.Duration(cfg.Monitor.CheckIntervalSec) * time.Second) }
 			respChan <- true
 
@@ -146,7 +143,8 @@ func monitorLoop(cfg *Config, processDone chan error) (exitAction string, wasRes
 		case action := <-AdminActionChan:
 			LogInfo.Printf("Received admin action: %s", action)
 			if action == "shutdown" || action == "restart" {
-				if err := PostShutdown(cfg.RestAPI.Port, cfg.GetAdminPassword()); err != nil {
+                // THE FIX: Use the new direct password field
+				if err := PostShutdown(cfg.RestAPI.Port, cfg.RestAPI.AdminPassword); err != nil {
 					LogWarn.Printf("Graceful shutdown failed: %v.", err)
 				}
 			}
@@ -182,13 +180,12 @@ func isProcessRunningByName(executableName string) bool {
 	return strings.Contains(string(output), executableName)
 }
 
-// Updated to return an error so the loop knows if it's a fatal config error
 func runHealthCheck(cfg *Config) (bool, error) {
-	pw := cfg.GetAdminPassword() // Using the new 1.0 safe helper
+    // THE FIX: Use the new direct password field
+	pw := cfg.RestAPI.AdminPassword 
 
 	metrics, metricsErr := GetAPIMetrics(cfg.RestAPI.Port, pw)
 	
-	// Fast-fail if the password is wrong (Palworld 1.0 strict mode)
 	if metricsErr != nil && strings.Contains(metricsErr.Error(), "Unauthorized") {
 		state.SetStatus("Config Error")
 		return false, metricsErr

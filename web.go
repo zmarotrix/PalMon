@@ -72,7 +72,6 @@ func startWebServer(cfg *Config, errChan chan error) {
 		mux.ServeHTTP(w, r.WithContext(ctx))
 	})
 	
-
 	parts := strings.Split(cfg.Web.ListenAddress, ":")
 	port := parts[len(parts)-1]
 
@@ -99,10 +98,9 @@ func startWebServer(cfg *Config, errChan chan error) {
 				if browserErr != nil {
 					LogWarn.Printf("Could not auto-open browser, but you can click the link above.")
 				}
-				break // Exit the loop once the browser has been opened
+				break
 			}
 			
-			// Wait 2 seconds before checking the server state again
 			time.Sleep(2 * time.Second)
 		}
 	}()
@@ -145,10 +143,11 @@ func handlePlayerAction(action string, cfg *Config) http.HandlerFunc {
 			return
 		}
 		var err error
+        // THE FIX: Use the new direct password field
 		if action == "kick" {
-			err = PostKickPlayer(cfg.RestAPI.Port, cfg.GetAdminPassword(), payload.UserID)
+			err = PostKickPlayer(cfg.RestAPI.Port, cfg.RestAPI.AdminPassword, payload.UserID)
 		} else if action == "ban" {
-			err = PostBanPlayer(cfg.RestAPI.Port, cfg.GetAdminPassword(), payload.UserID)
+			err = PostBanPlayer(cfg.RestAPI.Port, cfg.RestAPI.AdminPassword, payload.UserID)
 		}
 		if err != nil {
 			log.Printf("Failed to %s player %s: %v", action, payload.UserID, err)
@@ -167,7 +166,8 @@ func handleBroadcast(cfg *Config) http.HandlerFunc {
 			http.Error(w, "Bad request", http.StatusBadRequest)
 			return
 		}
-		if err := PostBroadcast(cfg.RestAPI.Port, cfg.GetAdminPassword(), payload.Message); err != nil {
+        // THE FIX: Use the new direct password field
+		if err := PostBroadcast(cfg.RestAPI.Port, cfg.RestAPI.AdminPassword, payload.Message); err != nil {
 			log.Printf("Broadcast failed: %v", err)
 			http.Error(w, "Broadcast failed", http.StatusInternalServerError)
 		} else {
