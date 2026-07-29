@@ -1,5 +1,7 @@
 # PalMon - A Palworld Server Monitor & Admin Tool
 
+**⚠️ Fully Compatible with the Palworld 1.0 Update!**
+
 PalMon is a lightweight, standalone, low-overhead monitoring and administration tool for your Palworld dedicated server. It is written in Go and provides a simple web-based dashboard accessible from any device. It runs as a single executable with zero dependencies, making it easy to set up and manage.
 
 ## Features
@@ -9,14 +11,15 @@ PalMon is a lightweight, standalone, low-overhead monitoring and administration 
 - **Web-Based Dashboard:** A clean, modern, read-only UI for anyone to view the server's status.
   - Live Server FPS & Uptime.
   - Current vs. Max Player Count.
-  - A list of all currently online players and their levels.
+  - A list of all currently online players and their levels (Supports 1.0 Crossplay IDs).
 - **Secure Admin Panel:**
   - Login with a username and password to access admin tools.
+  - **Live Configuration Editor:** Visually edit your `PalWorldSettings.ini` directly from the browser! Automatically creates `.bak` backups before saving.
   - **Announce:** Send in-game messages (broadcasts) to all players.
   - **Kick/Ban:** Kick or ban players directly from the UI.
   - **Graceful Shutdown & Restart:** Safely shut down or restart the server, allowing it to save first.
   - **Manual Refresh:** Force an immediate health check to get the latest data.
-- **Discord Notifications:** Optional integration to send a message to a Discord channel when the server restarts.
+- **Discord Notifications:** Optional integration to send a message to a Discord channel when the server restarts or throws a configuration error.
 
 ## Setup & Installation
 
@@ -29,7 +32,7 @@ Follow these steps to get PalMon running.
 
 ### Step 1: Configure Your Palworld Server
 
-PalMon relies on the server's built-in REST API. You must enable it.
+Palworld 1.0 deprecated RCON. PalMon relies purely on the server's built-in REST API. You must enable it.
 
 1.  Stop your Palworld server.
 2.  Open your server's configuration file, located at:
@@ -41,7 +44,7 @@ PalMon relies on the server's built-in REST API. You must enable it.
     RESTAPIPort=8212
     AdminPassword="YourSecretPasswordHere"
     ```
-    - The `AdminPassword` is used for **both** RCON and the REST API. **Do not use special characters like `@` or `"` in this password.**
+    - **CRITICAL for Palworld 1.0:** The `AdminPassword` CANNOT be blank! The REST API will actively reject connections without one.
 
 4.  Save the file and restart your Palworld server.
 
@@ -50,7 +53,7 @@ PalMon relies on the server's built-in REST API. You must enable it.
 Open the `config.json` file in a text editor and fill in the details. **This is the most important step.**
 
 - Set the `path` to your PalServer directory.
-- Set the `password` in the `rcon` section to match the `AdminPassword` from `PalWorldSettings.ini`.
+- Set the `admin_password` in the `rest_api` section to exactly match the `AdminPassword` from your `PalWorldSettings.ini`.
 - Set a secure `username` and `password` for the `web` admin panel.
 
 (See the detailed configuration breakdown below).
@@ -64,7 +67,9 @@ For others to see your dashboard, you need to allow traffic on the port PalMon u
 
 ### Step 4: Run PalMon
 
-Simply double-click `PalMon.exe`. A command prompt window will open and show the application's logs. You can minimize this window, but it must remain running for the monitor to work.
+Simply double-click `PalMon.exe`. A command prompt window will open and wait for your Palworld server to fully boot. Once the server is healthy (or if it detects a configuration error), **PalMon will automatically open your web browser to the dashboard!** 
+
+You can minimize the command prompt window, but it must remain running for the monitor to work.
 
 ## Usage
 
@@ -75,13 +80,15 @@ Simply double-click `PalMon.exe`. A command prompt window will open and show the
 
 | Section   | Key                  | Description                                                                                             |
 | :-------- | :------------------- | :------------------------------------------------------------------------------------------------------ |
-| `server`  | `path`               | The full path to your `PalServer` directory (e.g., `G:\\SteamLibrary\\steamapps\\common\\PalServer`).      |
+| `server`  | `path`               | The full path to your `PalServer` directory (e.g., `C:\\SteamLibrary\\steamapps\\common\\PalServer`).   |
 |           | `executable`         | The name of the server executable file (usually `PalServer.exe`).                                       |
-| `monitor` | `startup_delay_seconds` | How long to wait after starting the server before the first health check. `120` (2 minutes) is safe.     |
-|           | `health_check_interval_seconds` | How often to check the server's health after startup. `60` (1 minute) is a good balance.         |
+| `monitor` | `startup_delay_seconds` | How long to wait after starting the server before the first health check. `30` is recommended for the 1.0 map. |
+|           | `health_check_interval_seconds` | How often to check the server's health after startup. `20` to `60` seconds is a good balance.   |
+|           | `rapid_check_interval_seconds` | How fast to re-check if the server appears unresponsive (during the triage phase). Default is `15`. |
 |           | `unhealthy_threshold`| Number of consecutive failed checks before triggering a restart. `3` is a safe default.                |
-| `rcon`    | `password`           | **Crucial.** Must match the `AdminPassword` in `PalWorldSettings.ini`. Used for REST API authentication. |
-| `rest_api`| `port`               | The port for the server's REST API. Default is `8212`.                                                  |
+| `rest_api`| `enabled`            | Must be set to `true`.                                                                                  |
+|           | `port`               | The port for the server's REST API. Default is `8212`.                                                  |
+|           | `admin_password`     | **Crucial.** Must match the `AdminPassword` in `PalWorldSettings.ini`. Used for REST API authentication.|
 | `web`     | `listen_address`     | The IP and port for the PalMon web dashboard to run on. `0.0.0.0:7777` makes it accessible on all network interfaces. |
 |           | `page_title`         | A fallback title for the web page if the server name can't be fetched.                                  |
 |           | `username`           | The username for the admin panel login.                                                                 |
