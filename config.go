@@ -17,13 +17,15 @@ type Config struct {
 		RapidCheckIntervalSec int `json:"rapid_check_interval_seconds"`
 		UnhealthyThreshold    int `json:"unhealthy_threshold"`
 	} `json:"monitor"`
-	RCON struct {
+	RCON struct { 
+		// Kept for backward compatibility with old config.json files
 		Address  string `json:"address"`
 		Password string `json:"password"`
 	} `json:"rcon"`
 	RestAPI struct {
-		Enabled bool `json:"enabled"`
-		Port    int  `json:"port"`
+		Enabled       bool   `json:"enabled"`
+		Port          int    `json:"port"`
+		AdminPassword string `json:"admin_password"` // NEW for 1.0!
 	} `json:"rest_api"`
 	Web struct {
 		ListenAddress string `json:"listen_address"`
@@ -46,4 +48,13 @@ func loadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 	return &config, nil
+}
+
+// GetAdminPassword safely transitions to the new 1.0 setting 
+// while keeping old configurations functional.
+func (c *Config) GetAdminPassword() string {
+	if c.RestAPI.AdminPassword != "" {
+		return c.RestAPI.AdminPassword
+	}
+	return c.RCON.Password // Fallback to legacy setting
 }

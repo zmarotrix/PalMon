@@ -64,10 +64,16 @@ func runMonitor(cfg *Config, errChan chan error) {
 			select { case <-processDone: LogInfo.Println("Launcher handle released.") 
 			case <-time.After(5 * time.Second): LogWarn.Println("Timeout waiting for launcher handle.") }
 
-			if exitAction == "shutdown" {
-				LogInfo.Println("Server shutdown requested by admin. Entering STOPPED state.")
+			// *** PALWORLD 1.0 FIX: Halt loop on configuration error so we don't endlessly kill/restart! ***
+			if exitAction == "shutdown" || exitAction == "config_error" {
+				LogInfo.Println("Server halted. Entering STOPPED state.")
 				state.UpdateFullState("Stopped", state.ServerName, nil, 0, 0, 0)
-				sendDiscordNotification(cfg.Discord.WebhookURL, "Server has been stopped by an admin.")
+				
+				if exitAction == "config_error" {
+					sendDiscordNotification(cfg.Discord.WebhookURL, "CRITICAL ERROR: PalMon stopped. Palworld 1.0 requires an AdminPassword.")
+				} else {
+					sendDiscordNotification(cfg.Discord.WebhookURL, "Server has been stopped by an admin.")
+				}
 				currentState = StateStopped
 			} else {
 				if !wasResponsive { sendDiscordNotification(cfg.Discord.WebhookURL, "Server became unresponsive and is being restarted.")
@@ -103,14 +109,23 @@ func monitorLoop(cfg *Config, processDone chan error) (exitAction string, wasRes
 			healthTickerChan = healthTicker.C
 		
 		case <-healthTickerChan:
-			if !runHealthCheck(cfg) {
+			isHealthy, err := runHealthCheck(cfg)
+			
+			// *** PALWORLD 1.0 FIX: Break the loop if password is wrong ***
+			if err != nil && strings.Contains(err.Error(), "Unauthorized") {
+				LogError.Println("CRITICAL: " + err.Error())
+				if healthTicker != nil { healthTicker.Stop() }; return "config_error", true
+			}
+
+			if !isHealthy {
 				LogWarn.Println("Entering rapid triage state...")
 				state.SetStatus("Confirming")
 				isRecovered := false
 				for i := 1; i < cfg.Monitor.UnhealthyThreshold; i++ {
 					time.Sleep(time.Duration(cfg.Monitor.RapidCheckIntervalSec) * time.Second)
 					LogInfo.Printf("Performing rapid check %d/%d...", i+1, cfg.Monitor.UnhealthyThreshold)
-					if runHealthCheck(cfg) { LogSuccess.Println("Server recovered during triage."); isRecovered = true; break }
+					healthy, _ := runHealthCheck(cfg)
+					if healthy { LogSuccess.Println("Server recovered during triage."); isRecovered = true; break }
 				}
 				if !isRecovered {
 					LogError.Println("Server failed all triage checks and is confirmed unresponsive.")
@@ -119,7 +134,8 @@ func monitorLoop(cfg *Config, processDone chan error) (exitAction string, wasRes
 			}
 
 		case respChan := <-ForceCheckChan:
-			LogInfo.Println("Manual health check triggered by admin."); runHealthCheck(cfg)
+			LogInfo.Println("Manual health check triggered by admin.")
+			runHealthCheck(cfg) // Error ignored for manual trigger
 			if healthTicker != nil { healthTicker.Reset(time.Duration(cfg.Monitor.CheckIntervalSec) * time.Second) }
 			respChan <- true
 
@@ -130,7 +146,7 @@ func monitorLoop(cfg *Config, processDone chan error) (exitAction string, wasRes
 		case action := <-AdminActionChan:
 			LogInfo.Printf("Received admin action: %s", action)
 			if action == "shutdown" || action == "restart" {
-				if err := PostShutdown(cfg.RestAPI.Port, cfg.RCON.Password); err != nil {
+				if err := PostShutdown(cfg.RestAPI.Port, cfg.GetAdminPassword()); err != nil {
 					LogWarn.Printf("Graceful shutdown failed: %v.", err)
 				}
 			}
@@ -165,16 +181,29 @@ func isProcessRunningByName(executableName string) bool {
 	if err != nil { return false }
 	return strings.Contains(string(output), executableName)
 }
-func runHealthCheck(cfg *Config) bool {
-	metrics, metricsErr := GetAPIMetrics(cfg.RestAPI.Port, cfg.RCON.Password)
-	players, playersErr := GetAPIPlayers(cfg.RestAPI.Port, cfg.RCON.Password)
-	settings, settingsErr := GetAPISettings(cfg.RestAPI.Port, cfg.RCON.Password)
+
+// Updated to return an error so the loop knows if it's a fatal config error
+func runHealthCheck(cfg *Config) (bool, error) {
+	pw := cfg.GetAdminPassword() // Using the new 1.0 safe helper
+
+	metrics, metricsErr := GetAPIMetrics(cfg.RestAPI.Port, pw)
+	
+	// Fast-fail if the password is wrong (Palworld 1.0 strict mode)
+	if metricsErr != nil && strings.Contains(metricsErr.Error(), "Unauthorized") {
+		state.SetStatus("Config Error")
+		return false, metricsErr
+	}
+
+	players, playersErr := GetAPIPlayers(cfg.RestAPI.Port, pw)
+	settings, settingsErr := GetAPISettings(cfg.RestAPI.Port, pw)
+	
 	if metricsErr != nil || playersErr != nil || settingsErr != nil {
 		LogWarn.Printf("Health check failed. Errors: %v, %v, %v", metricsErr, playersErr, settingsErr)
 		state.SetStatus("Unhealthy")
-		return false
+		return false, nil
 	}
+	
 	LogSuccess.Printf("Health check successful. FPS: %d, Players: %d/%d", metrics.ServerFPS, metrics.PlayerCount, metrics.MaxPlayers)
 	state.UpdateFullState("Healthy", settings.ServerName, players.Players, metrics.MaxPlayers, metrics.ServerFPS, metrics.Uptime)
-	return true
+	return true, nil
 }

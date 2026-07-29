@@ -29,6 +29,12 @@
         .metrics-value.Starting, .metrics-value.Initializing, .metrics-value.Restarting { color: var(--starting); }
         .metrics-value.Stopped { color: var(--stopped); }
         #player-list-container li { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid var(--border); }
+        #player-list-container li > span:first-child {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-right: 10px;
+        }
         #player-list-container li:last-child { border-bottom: none; }
         .player-actions button { 
             background-color: #555; color: var(--text); border: none; padding: 5px 10px; 
@@ -75,6 +81,22 @@
                     <input type="text" id="broadcast-message" placeholder="Send a message to all players...">
                     <button onclick="broadcast()">Announce</button>
                 </div>
+                
+                <!-- NEW SETTINGS EDITOR BLOCK -->
+                <hr style="border-color: var(--border); margin: 1.5rem 0;">
+                <h3>Server Configuration Editor</h3>
+                <p style="font-size: 0.9em; color: var(--text-muted); margin-top: -10px;">Edits PalWorldSettings.ini directly. A backup is automatically created.</p>
+                <button onclick="openSettingsEditor()" style="background-color: #555; color: var(--text); border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer;">Load & Edit Settings</button>
+                
+                <div id="settings-editor" style="display: none; margin-top: 15px; background: #222; padding: 15px; border-radius: 8px; border: 1px solid var(--border);">
+                    <div id="settings-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; max-height: 400px; overflow-y: auto; margin-bottom: 15px; padding-right: 10px;"></div>
+                    <div class="server-actions">
+                        <button class="shutdown" onclick="document.getElementById('settings-editor').style.display='none'">Cancel</button>
+                        <button class="start" onclick="saveSettings()">Save & Backup</button>
+                    </div>
+                </div>
+                <!-- END SETTINGS EDITOR BLOCK -->
+
                 <hr style="border-color: var(--border); margin: 1.5rem 0;">
                 <div class="server-actions">
                     <button id="refresh-button" class="refresh-now" onclick="manualRefresh()">Refresh Now</button>
@@ -223,6 +245,64 @@
             refreshData();
             setInterval(refreshData, 5000);
         });
+
+        async function openSettingsEditor() {
+            try {
+                const res = await fetch('/api/settings_file');
+                if (!res.ok) throw new Error("Could not find or parse PalWorldSettings.ini. Ensure your server path in config.json is correct.");
+                const settings = await res.json();
+                
+                const grid = document.getElementById('settings-grid');
+                grid.innerHTML = '';
+                
+                // Sort keys alphabetically so it looks clean
+                Object.keys(settings).sort().forEach(key => {
+                    const div = document.createElement('div');
+                    div.style.display = 'flex';
+                    div.style.flexDirection = 'column';
+                    div.style.gap = '2px';
+                    
+                    const label = document.createElement('label');
+                    label.textContent = key;
+                    label.style.fontSize = '0.85em';
+                    label.style.color = 'var(--text-muted)';
+                    
+                    const input = document.createElement('input');
+                    input.type = 'text';
+                    input.dataset.key = key;
+                    input.value = settings[key];
+                    input.style.backgroundColor = '#333';
+                    input.style.border = '1px solid var(--border)';
+                    input.style.color = 'var(--text)';
+                    input.style.padding = '8px';
+                    input.style.borderRadius = '4px';
+                    
+                    div.appendChild(label);
+                    div.appendChild(input);
+                    grid.appendChild(div);
+                });
+                
+                document.getElementById('settings-editor').style.display = 'block';
+            } catch (err) {
+                alert(err);
+            }
+        }
+        
+        async function saveSettings() {
+            if(!confirm("This will overwrite your PalWorldSettings.ini file and create a backup. The server MUST be restarted for changes to take effect. Continue?")) return;
+            
+            const inputs = document.querySelectorAll('#settings-grid input');
+            const newSettings = {};
+            inputs.forEach(input => {
+                newSettings[input.dataset.key] = input.value;
+            });
+            
+            const success = await postAction('/actions/settings_save', newSettings);
+            if (success) {
+                alert("Settings saved and backup created! Please restart the server from the admin panel to apply your changes.");
+                document.getElementById('settings-editor').style.display = 'none';
+            }
+        }
     </script>
 </body>
 </html>

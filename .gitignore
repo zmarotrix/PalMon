@@ -4,3 +4,5 @@ Build.bat
 PalMon.exe
 
 go.sum
+
+palmon_log.txt

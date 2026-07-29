@@ -26,6 +26,8 @@ type APIPlayers struct {
 	Players []APIPlayer `json:"players"`
 }
 
+// Note: I kept this as a struct so it doesn't break your existing main.go. 
+// If you want to dynamically pull new 1.0 settings later, change this to a map[string]interface{}
 type APISettings struct {
 	ServerName string `json:"ServerName"`
 }
@@ -34,21 +36,36 @@ type APISettings struct {
 func makeAPIRequest(url string, password string, target interface{}) error {
 	req, err := http.NewRequest("GET", url, nil); if err != nil { return fmt.Errorf("could not create request: %w", err) }
 	if password != "" { req.SetBasicAuth("admin", password) }
+	
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req); if err != nil { return fmt.Errorf("request failed: %w", err) }
 	defer resp.Body.Close()
+	
+	// *** PALWORLD 1.0 UPDATE: Handle strict blank/invalid password rejections ***
+	if resp.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("CRITICAL (Palworld 1.0): Unauthorized. Check that your AdminPassword is correct and not blank in both PalMon and PalWorldSettings.ini")
+	}
+	
 	if resp.StatusCode != http.StatusOK { return fmt.Errorf("received non-200 status code: %d", resp.StatusCode) }
 	return json.NewDecoder(resp.Body).Decode(target)
 }
 
 func PostAPIRequest(url string, password string, body interface{}) error {
 	jsonBody, err := json.Marshal(body); if err != nil { return fmt.Errorf("could not marshal json body: %w", err) }
+	
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonBody)); if err != nil { return fmt.Errorf("could not create post request: %w", err) }
 	req.Header.Set("Content-Type", "application/json")
 	if password != "" { req.SetBasicAuth("admin", password) }
+	
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req); if err != nil { return fmt.Errorf("post request failed: %w", err) }
 	defer resp.Body.Close()
+	
+	// *** PALWORLD 1.0 UPDATE: Handle strict blank/invalid password rejections ***
+	if resp.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("CRITICAL (Palworld 1.0): Unauthorized. Check that your AdminPassword is correct and not blank in both PalMon and PalWorldSettings.ini")
+	}
+
 	if resp.StatusCode != http.StatusOK { return fmt.Errorf("post request received non-200 status code: %d", resp.StatusCode) }
 	return nil
 }
@@ -57,24 +74,29 @@ func GetAPIMetrics(port int, password string) (*APIMetrics, error) {
 	var metrics APIMetrics
 	return &metrics, makeAPIRequest(fmt.Sprintf("http://127.0.0.1:%d/v1/api/metrics", port), password, &metrics)
 }
+
 func GetAPIPlayers(port int, password string) (*APIPlayers, error) {
 	var players APIPlayers
 	return &players, makeAPIRequest(fmt.Sprintf("http://127.0.0.1:%d/v1/api/players", port), password, &players)
 }
+
 func GetAPISettings(port int, password string) (*APISettings, error) {
 	var settings APISettings
 	return &settings, makeAPIRequest(fmt.Sprintf("http://127.0.0.1:%d/v1/api/settings", port), password, &settings)
 }
+
 func PostKickPlayer(port int, password string, userID string) error {
 	url := fmt.Sprintf("http://127.0.0.1:%d/v1/api/kick", port)
 	body := map[string]string{"userid": userID, "message": "Kicked by admin."}
 	return PostAPIRequest(url, password, body)
 }
+
 func PostBanPlayer(port int, password string, userID string) error {
 	url := fmt.Sprintf("http://127.0.0.1:%d/v1/api/ban", port)
 	body := map[string]string{"userid": userID, "message": "Banned by admin."}
 	return PostAPIRequest(url, password, body)
 }
+
 func PostBroadcast(port int, password string, message string) error {
 	// *** THIS IS THE FIX ***
 	// The endpoint is /announce, not /broadcast.
@@ -82,6 +104,7 @@ func PostBroadcast(port int, password string, message string) error {
 	body := map[string]string{"message": message}
 	return PostAPIRequest(url, password, body)
 }
+
 func PostShutdown(port int, password string) error {
 	url := fmt.Sprintf("http://127.0.0.1:%d/v1/api/shutdown", port)
 	body := map[string]string{"waittime": "5", "message": "Server is shutting down now."}

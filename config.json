@@ -5,18 +5,15 @@
     "real_executable_name": "PalServer-Win64-Shipping-Cmd.exe"
   },
   "monitor": {
-    "startup_delay_seconds": 5,
+    "startup_delay_seconds": 30,
     "health_check_interval_seconds": 20,
-    "unhealthy_threshold": 3,
-    "unhealthy_threshold": 5
-  },
-  "rcon": {
-    "address": "127.0.0.1:25575",
-    "password": "YourAdminPasswordHere"
+    "rapid_check_interval_seconds": 15,
+    "unhealthy_threshold": 3
   },
   "rest_api": {
     "enabled": true,
-    "port": 8212
+    "port": 8212,
+    "admin_password": "YourAdminPasswordHere"
   },
   "web": {
     "listen_address": "0.0.0.0:7777",

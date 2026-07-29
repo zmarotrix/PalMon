@@ -1,12 +1,16 @@
 package main
 
 import (
-	"context" // <--- THIS IS THE FIX. The missing import has been added.
+	"context" 
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
+	"time"
+	"os/exec"
+	"runtime"
+	"strings"
 	"time"
 )
 
@@ -47,6 +51,8 @@ func startWebServer(cfg *Config, errChan chan error) {
 	mux.HandleFunc("/actions/shutdown", authMiddleware(handleServerAction("shutdown")))
 	mux.HandleFunc("/actions/start", authMiddleware(handleServerAction("start")))
 	mux.HandleFunc("/actions/refresh", authMiddleware(handleRefresh()))
+	mux.HandleFunc("/api/settings_file", authMiddleware(handleGetSettings(cfg)))
+	mux.HandleFunc("/actions/settings_save", authMiddleware(handleSaveSettings(cfg)))
 	
 	// Root handler for the HTML page
 	tpl := template.Must(template.ParseFiles("templates/index.html"))
@@ -68,7 +74,41 @@ func startWebServer(cfg *Config, errChan chan error) {
 		mux.ServeHTTP(w, r.WithContext(ctx))
 	})
 	
-	LogInfo.Printf("Web interface listening on http://%s", cfg.Web.ListenAddress)
+
+	parts := strings.Split(cfg.Web.ListenAddress, ":")
+	port := parts[len(parts)-1]
+
+	LogInfo.Printf("Web interface bound to %s", cfg.Web.ListenAddress)
+	LogInfo.Printf("👉 Local Web UI Link: http://localhost:%s", port)
+	LogInfo.Println("Waiting for Palworld server to fully boot before opening browser...")
+
+	localURL := "http://localhost:" + port
+	
+	go func() {
+		for {
+			status, _, _, _, _, _ := state.GetFullState()
+			
+			if status == "Healthy" || status == "Config Error" {
+				if status == "Healthy" {
+					LogInfo.Println("Server is ready! Auto-opening Web UI...")
+				} else {
+					LogWarn.Println("Configuration error detected! Opening Web UI so you can fix it...")
+				}
+
+				var browserErr error
+				browserErr = exec.Command("rundll32", "url.dll,FileProtocolHandler", localURL).Start()
+
+				if browserErr != nil {
+					LogWarn.Printf("Could not auto-open browser, but you can click the link above.")
+				}
+				break // Exit the loop once the browser has been opened
+			}
+			
+			// Wait 2 seconds before checking the server state again
+			time.Sleep(2 * time.Second)
+		}
+	}()
+    
 	if err := http.ListenAndServe(cfg.Web.ListenAddress, handlerWithConfig); err != nil {
 		errChan <- fmt.Errorf("failed to start web server: %w", err)
 	}
@@ -170,4 +210,31 @@ func formatUptime(s uint64) string {
 		return fmt.Sprintf("%dh %dm", h, m)
 	}
 	return fmt.Sprintf("%dm", m)
+}
+
+func handleGetSettings(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		settings, err := ParseINI(cfg.Server.Path)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(settings)
+	}
+}
+
+func handleSaveSettings(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var settings map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+		if err := SaveINI(cfg.Server.Path, settings); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		LogSuccess.Println("Admin successfully updated PalWorldSettings.ini and created a backup.")
+		w.WriteHeader(http.StatusOK)
+	}
 }
