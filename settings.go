@@ -1,18 +1,19 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// Locates the active PalWorldSettings.ini file automatically
 func getSettingsPath(basePath string) (string, error) {
 	paths := []string{
 		filepath.Join(basePath, "Pal", "Saved", "Config", "WindowsServer", "PalWorldSettings.ini"),
@@ -23,16 +24,15 @@ func getSettingsPath(basePath string) (string, error) {
 			return p, nil
 		}
 	}
-	return "", fmt.Errorf("PalWorldSettings.ini not found in WindowsServer or LinuxServer folders")
+	return "", fmt.Errorf("PalWorldSettings.ini not found")
 }
 
-// Reads the INI and rips the OptionSettings string into a Go map
+// THIS IS THE NEW, CORRECTED PARSER
 func ParseINI(basePath string) (map[string]string, error) {
 	path, err := getSettingsPath(basePath)
 	if err != nil {
 		return nil, err
 	}
-
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -43,13 +43,28 @@ func ParseINI(basePath string) (map[string]string, error) {
 	if len(matches) < 2 {
 		return nil, fmt.Errorf("OptionSettings string not found in file")
 	}
-
 	settingsStr := matches[1]
 	settings := make(map[string]string)
 	
-	// Split by comma, then by equals sign
+	// --- THIS IS THE FIX ---
+	// 1. Isolate the special CrossplayPlatforms setting first.
+	crossplayRe := regexp.MustCompile(`CrossplayPlatforms=\([^)]*\)`)
+	crossplayMatch := crossplayRe.FindString(settingsStr)
+	if crossplayMatch != "" {
+		kv := strings.SplitN(crossplayMatch, "=", 2)
+		settings[kv[0]] = kv[1]
+		// 2. Remove it from the main string so we can parse the rest safely.
+		settingsStr = crossplayRe.ReplaceAllString(settingsStr, "")
+	}
+	// --- END OF FIX ---
+
+	// 3. Now parse the rest of the simple key=value pairs.
 	parts := strings.Split(settingsStr, ",")
 	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
 		kv := strings.SplitN(part, "=", 2)
 		if len(kv) == 2 {
 			settings[strings.TrimSpace(kv[0])] = strings.TrimSpace(kv[1])
@@ -58,139 +73,153 @@ func ParseINI(basePath string) (map[string]string, error) {
 	return settings, nil
 }
 
-// Backs up the old INI and writes the new settings
+
 func SaveINI(basePath string, settings map[string]string) error {
 	path, err := getSettingsPath(basePath)
 	if err != nil {
-		return err
+		path = filepath.Join(basePath, "Pal", "Saved", "Config", "WindowsServer", "PalWorldSettings.ini")
 	}
 
-	// Create Backup
-	backupPath := fmt.Sprintf("%s.bak.%d", path, time.Now().Unix())
-	if err := copyFile(path, backupPath); err != nil {
-		return fmt.Errorf("failed to create backup: %w", err)
+	if _, err := os.Stat(path); err == nil {
+		backupPath := fmt.Sprintf("%s.bak.%d", path, time.Now().Unix())
+		if err := copyFile(path, backupPath); err != nil {
+			return fmt.Errorf("failed to create backup: %w", err)
+		}
 	}
 
-	// Reconstruct the weird comma-separated string
+	var keys []string
+	for k := range settings {
+		// We handle the special case separately
+		if k != "CrossplayPlatforms" {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+
 	var parts []string
-	for k, v := range settings {
-		parts = append(parts, fmt.Sprintf("%s=%s", k, v))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%s", k, settings[k]))
 	}
-	newOptions := fmt.Sprintf("OptionSettings=(%s)", strings.Join(parts, ","))
+	
+	// Add the special crossplay setting at the end, if it exists
+	if crossplayVal, ok := settings["CrossplayPlatforms"]; ok {
+		parts = append(parts, fmt.Sprintf("CrossplayPlatforms=%s", crossplayVal))
+	}
 
-	// Write the final INI format
+	newOptions := fmt.Sprintf("OptionSettings=(%s)", strings.Join(parts, ","))
 	newContent := fmt.Sprintf("[/Script/Pal.PalGameWorldSettings]\n%s\n", newOptions)
 	return os.WriteFile(path, []byte(newContent), 0644)
 }
+
+func EnsureSettings(basePath string) (int, string, error) {
+	if _, err := os.Stat(basePath); os.IsNotExist(err) {
+		return 0, "", fmt.Errorf("the server path '%s' does not exist", basePath)
+	}
+
+	_, err := getSettingsPath(basePath)
+	if err != nil {
+		LogWarn.Println("PalWorldSettings.ini not found. Attempting to create a new one from default.")
+		destPath := filepath.Join(basePath, "Pal", "Saved", "Config", "WindowsServer", "PalWorldSettings.ini")
+		defaultPath := filepath.Join(basePath, "DefaultPalWorldSettings.ini")
+
+		if _, err := os.Stat(defaultPath); os.IsNotExist(err) {
+			return 0, "", fmt.Errorf("CRITICAL: DefaultPalWorldSettings.ini is missing from your server directory. Please verify the server files in Steam to restore it")
+		}
+
+		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+			return 0, "", fmt.Errorf("failed to create config directory: %w. Try running as Administrator", err)
+		}
+		if err := copyFile(defaultPath, destPath); err != nil {
+			return 0, "", fmt.Errorf("failed to copy default settings: %w. Try running as Administrator", err)
+		}
+		LogSuccess.Printf("Created a new PalWorldSettings.ini from the default template.")
+	}
+
+	settingsMap, err := ParseINI(basePath)
+	if err != nil {
+		return 0, "", fmt.Errorf("failed to parse settings file: %w", err)
+	}
+
+	changed := false
+
+	if val, ok := settingsMap["RESTAPIEnabled"]; !ok || val != "True" {
+		settingsMap["RESTAPIEnabled"] = "True"
+		changed = true
+	}
+
+	// --- THIS IS THE CRITICAL FIX ---
+	// We now correctly look for RESTAPIPort and default to 8212.
+	apiPort := 8212 
+	if val, ok := settingsMap["RESTAPIPort"]; ok {
+		if p, err := strconv.Atoi(val); err == nil {
+			apiPort = p
+		}
+	} else {
+		// If RESTAPIPort is missing, we add it and default to 8212.
+		settingsMap["RESTAPIPort"] = "8212"
+		changed = true
+	}
+	// --- END OF FIX ---
+
+	adminPass, ok := settingsMap["AdminPassword"]
+	adminPass = strings.Trim(adminPass, `"`)
+	if !ok || adminPass == "" {
+		r := rand.New(rand.NewSource(time.Now().UnixNano()))
+		adminPass = fmt.Sprintf("BlankPassFix-%d", r.Intn(90000)+10000)
+		settingsMap["AdminPassword"] = fmt.Sprintf(`"%s"`, adminPass)
+		changed = true
+		fmt.Printf("\n======================================================\n")
+		fmt.Printf("WARNING: AdminPassword was blank in PalWorldSettings.ini!\n")
+		fmt.Printf("A secure password has been generated for you: %s\n", adminPass)
+		fmt.Printf("======================================================\n\n")
+	}
+
+	if changed {
+		if err := SaveINI(basePath, settingsMap); err != nil {
+			return 0, "", fmt.Errorf("failed to save updated settings: %w", err)
+		}
+		LogInfo.Println("Automatically configured required settings in PalWorldSettings.ini")
+	}
+
+	return apiPort, adminPass, nil
+}
+
+
+// --- All other functions below this line are unchanged ---
 
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil { return err }
 	defer in.Close()
-	
 	out, err := os.Create(dst)
 	if err != nil { return err }
 	defer out.Close()
-	
 	_, err = io.Copy(out, in)
 	return err
 }
 
-// EnsureSettings verifies the INI exists, enforces RESTAPIEnabled=True,
-// secures a blank AdminPassword, and returns the configured Port and Password.
-func EnsureSettings(basePath string) (int, string, error) {
-	destPath, err := getSettingsPath(basePath)
-	if err != nil || destPath == "" {
-		destPath = filepath.Join(basePath, "Pal", "Saved", "Config", "WindowsServer", "PalWorldSettings.ini")
+func getPalMonSettingsPath() string {
+	return "PalMonServerSettings.json"
+}
+
+func LoadPalMonSettings() (map[string]string, error) {
+	path := getPalMonSettingsPath()
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, fmt.Errorf("PalMon settings file does not exist yet")
 	}
-
-	// 1. Check if the file is blank or missing
-	info, err := os.Stat(destPath)
-	needsDefault := os.IsNotExist(err) || (err == nil && info.Size() < 50)
-
-	if needsDefault {
-		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-			return 0, "", fmt.Errorf("failed to create config directory: %w", err)
-		}
-		defaultPath := filepath.Join(basePath, "DefaultPalWorldSettings.ini")
-		if err := copyFile(defaultPath, destPath); err != nil {
-			return 0, "", fmt.Errorf("failed to copy default settings: %w", err)
-		}
-		fmt.Printf("INFO: Copied default settings from %s\n", defaultPath)
-	}
-
-	// 2. Read the file
-	data, err := os.ReadFile(destPath)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return 0, "", fmt.Errorf("failed to read settings file: %w", err)
+		return nil, err
 	}
-	
-	content := string(data)
-	changed := false
+	var settings map[string]string
+	err = json.Unmarshal(data, &settings)
+	return settings, err
+}
 
-	// 3. Safely enable REST API
-	reEnable := regexp.MustCompile(`RESTAPIEnabled=[a-zA-Z]+`)
-	if reEnable.MatchString(content) {
-		if !strings.Contains(content, "RESTAPIEnabled=True") {
-			content = reEnable.ReplaceAllString(content, "RESTAPIEnabled=True")
-			changed = true
-		}
-	} else if strings.Contains(content, "OptionSettings=(") {
-		content = strings.Replace(content, ")", ",RESTAPIEnabled=True)", 1)
-		changed = true
+func SavePalMonSettings(settings map[string]string) error {
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
 	}
-
-	// 4. Extract the RESTAPIPort dynamically
-	restPort := 8212 // Default fallback
-	rePort := regexp.MustCompile(`RESTAPIPort=(\d+)`)
-	match := rePort.FindStringSubmatch(content)
-	
-	if len(match) > 1 {
-		if parsedPort, err := strconv.Atoi(match[1]); err == nil {
-			restPort = parsedPort
-		}
-	} else if strings.Contains(content, "OptionSettings=(") {
-		content = strings.Replace(content, ")", ",RESTAPIPort=8212)", 1)
-		changed = true
-	}
-
-	// 5. Ensure AdminPassword is not blank
-	adminPass := ""
-	reAdminPass := regexp.MustCompile(`AdminPassword="([^"]*)"`)
-	adminPassMatch := reAdminPass.FindStringSubmatch(content)
-
-	if len(adminPassMatch) > 1 {
-		adminPass = adminPassMatch[1]
-	}
-
-	if adminPass == "" {
-		// Generate a random 5-digit number (between 10000 and 99999)
-		r := rand.New(rand.NewSource(time.Now().UnixNano()))
-		adminPass = fmt.Sprintf("BlankPassFix-%d", r.Intn(90000)+10000)
-
-		if len(adminPassMatch) > 1 {
-			// Replace the empty quotes with our new password
-			content = reAdminPass.ReplaceAllString(content, `AdminPassword="`+adminPass+`"`)
-		} else if strings.Contains(content, "OptionSettings=(") {
-			// Fallback if missing entirely from the string
-			content = strings.Replace(content, ")", `,AdminPassword="`+adminPass+`")`, 1)
-		}
-		changed = true
-		
-		fmt.Printf("\n======================================================\n")
-		fmt.Printf("WARNING: AdminPassword was blank in PalWorldSettings.ini!\n")
-		fmt.Printf("It has been automatically secured and set to: %s\n", adminPass)
-		fmt.Printf("Please update your config.json if you want a custom one.\n")
-		fmt.Printf("======================================================\n\n")
-	}
-
-	// 6. Save only if we modified the file
-	if changed {
-		if err := os.WriteFile(destPath, []byte(content), 0644); err != nil {
-			return 0, "", fmt.Errorf("failed to save updated settings: %w", err)
-		}
-		fmt.Println("INFO: Automatically enforced required settings in PalWorldSettings.ini")
-	}
-
-	return restPort, adminPass, nil
+	return os.WriteFile(getPalMonSettingsPath(), data, 0644)
 }

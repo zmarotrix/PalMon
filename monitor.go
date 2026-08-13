@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-// ServerState struct and its methods
+// ServerState struct and methods
 type ServerState struct {
 	mu          sync.RWMutex
 	Status      string; ServerName  string; Players     []APIPlayer
@@ -39,6 +40,22 @@ const (
 	StateStopped    = "STOPPED"
 )
 
+// SyncSettingsBeforeLaunch ensures the live PalWorldSettings.ini matches our desired config.
+func SyncSettingsBeforeLaunch(cfg *Config) (string, error) {
+	LogInfo.Println("Checking for pending setting changes before launch...")
+	desiredSettings, err := LoadPalMonSettings()
+	if err != nil {
+		LogInfo.Println("No PalMon settings file found. Skipping sync.")
+		return cfg.RestAPI.AdminPassword, nil
+	}
+	if err := SaveINI(cfg.Server.Path, desiredSettings); err != nil {
+		return "", fmt.Errorf("failed to sync settings to PalWorldSettings.ini: %w", err)
+	}
+	LogSuccess.Println("Successfully synced PalMon settings to PalWorldSettings.ini!")
+	syncedPassword := strings.Trim(desiredSettings["AdminPassword"], `"`)
+	return syncedPassword, nil
+}
+
 // Main monitor loop acting as a state machine
 func runMonitor(cfg *Config, errChan chan error) {
 	currentState := StateMonitoring
@@ -48,11 +65,19 @@ func runMonitor(cfg *Config, errChan chan error) {
 		case StateMonitoring:
 			LogInfo.Println("--- ENTERING MONITORING STATE ---")
 			state.UpdateFullState("Starting", "N/A", nil, 0, 0, 0)
-
+			
+			syncedPassword, err := SyncSettingsBeforeLaunch(cfg)
+			if err != nil {
+				errChan <- err
+				return
+			}
+			cfg.RestAPI.AdminPassword = syncedPassword
+			
 			cmd := exec.Command(filepath.Join(cfg.Server.Path, cfg.Server.Executable)); cmd.Dir = cfg.Server.Path
 			if err := cmd.Start(); err != nil { errChan <- fmt.Errorf("failed to start server: %w", err); return }
 			
-			LogInfo.Printf("Launcher process %s started with PID: %d", cfg.Server.Executable, cmd.Process.Pid)
+			launcherPID := cmd.Process.Pid
+			LogInfo.Printf("Launcher process %s started with PID: %d", cfg.Server.Executable, launcherPID)
 			sendDiscordNotification(cfg.Discord.WebhookURL, "Server process started.")
 			
 			processDone := make(chan error, 1); go func() { processDone <- cmd.Wait() }()
@@ -60,7 +85,8 @@ func runMonitor(cfg *Config, errChan chan error) {
 			exitAction, wasResponsive := monitorLoop(cfg, processDone)
 			
 			LogWarn.Println("--- STOPPING SERVER PROCESS ---")
-			ensureProcessStopped(cfg)
+			ensureProcessTreeStopped(launcherPID)
+			
 			select { case <-processDone: LogInfo.Println("Launcher handle released.") 
 			case <-time.After(5 * time.Second): LogWarn.Println("Timeout waiting for launcher handle.") }
 
@@ -69,7 +95,7 @@ func runMonitor(cfg *Config, errChan chan error) {
 				state.UpdateFullState("Stopped", state.ServerName, nil, 0, 0, 0)
 				
 				if exitAction == "config_error" {
-					sendDiscordNotification(cfg.Discord.WebhookURL, "CRITICAL ERROR: PalMon stopped. Palworld 1.0 requires an AdminPassword.")
+					sendDiscordNotification(cfg.Discord.WebhookURL, "CRITICAL ERROR: PalMon stopped due to an authorization issue.")
 				} else {
 					sendDiscordNotification(cfg.Discord.WebhookURL, "Server has been stopped by an admin.")
 				}
@@ -91,115 +117,107 @@ func runMonitor(cfg *Config, errChan chan error) {
 	}
 }
 
+
+// Core monitoring logic for when the server is running
 // Core monitoring logic for when the server is running
 func monitorLoop(cfg *Config, processDone chan error) (exitAction string, wasResponsive bool) {
 	LogInfo.Printf("Waiting %d seconds for server to initialize...", cfg.Monitor.StartupDelaySec)
 	state.SetStatus(fmt.Sprintf("Initializing (%ds)", cfg.Monitor.StartupDelaySec))
-	
+
+	// This timer controls the initial wait. After it fires, we start the main checks.
 	startupTimer := time.NewTimer(time.Duration(cfg.Monitor.StartupDelaySec) * time.Second)
-	var healthTicker *time.Ticker
-	var healthTickerChan <-chan time.Time
+	<-startupTimer.C // Block until the initial startup delay has passed.
+
+	LogInfo.Println("Initial startup delay complete. Starting health checks.")
 	
+	// Create the ticker for scheduled checks.
+	healthTicker := time.NewTicker(time.Duration(cfg.Monitor.CheckIntervalSec) * time.Second)
+	defer healthTicker.Stop() // Ensure the ticker is cleaned up when we exit.
+
+	// --- THIS IS THE NEW, CLEANER LOGIC ---
+	// We perform the first check immediately, then loop for all subsequent checks.
 	for {
-		select {
-		case <-startupTimer.C:
-			LogInfo.Println("Initial startup delay complete. Starting scheduled health checks.")
-			healthTicker = time.NewTicker(time.Duration(cfg.Monitor.CheckIntervalSec) * time.Second)
-			healthTickerChan = healthTicker.C
-		
-		case <-healthTickerChan:
-			isHealthy, err := runHealthCheck(cfg)
-			
-			if err != nil && strings.Contains(err.Error(), "Unauthorized") {
-				LogError.Println("CRITICAL: " + err.Error())
-				if healthTicker != nil { healthTicker.Stop() }; return "config_error", true
+		isHealthy, err := runHealthCheck(cfg)
+		if err != nil && strings.Contains(err.Error(), "Unauthorized") {
+			LogError.Println("CRITICAL: " + err.Error())
+			return "config_error", true
+		}
+
+		if !isHealthy {
+			LogWarn.Println("Health check failed. Entering rapid triage state...")
+			isRecovered := false
+			for i := 1; i < cfg.Monitor.UnhealthyThreshold; i++ {
+				time.Sleep(time.Duration(cfg.Monitor.RapidCheckIntervalSec) * time.Second)
+				LogInfo.Printf("Performing rapid check %d/%d...", i+1, cfg.Monitor.UnhealthyThreshold)
+				
+				healthy, _ := runHealthCheck(cfg)
+				if healthy {
+					LogSuccess.Println("Server recovered during triage.")
+					isRecovered = true
+					break
+				}
 			}
 
-			if !isHealthy {
-				LogWarn.Println("Entering rapid triage state...")
-				state.SetStatus("Confirming")
-				isRecovered := false
-				for i := 1; i < cfg.Monitor.UnhealthyThreshold; i++ {
-					time.Sleep(time.Duration(cfg.Monitor.RapidCheckIntervalSec) * time.Second)
-					LogInfo.Printf("Performing rapid check %d/%d...", i+1, cfg.Monitor.UnhealthyThreshold)
-					healthy, _ := runHealthCheck(cfg)
-					if healthy { LogSuccess.Println("Server recovered during triage."); isRecovered = true; break }
-				}
-				if !isRecovered {
-					LogError.Println("Server failed all triage checks and is confirmed unresponsive.")
-					if healthTicker != nil { healthTicker.Stop() }; return "crash", false
-				}
+			if !isRecovered {
+				LogError.Println("Server failed all triage checks and is confirmed unresponsive.")
+				return "crash", false
 			}
+		}
+
+		// If we reach here, the server is healthy. Now we wait for the next event.
+		select {
+		case <-healthTicker.C:
+			// Time for the next scheduled check, the loop will repeat.
+			continue 
 
 		case respChan := <-ForceCheckChan:
 			LogInfo.Println("Manual health check triggered by admin."); runHealthCheck(cfg)
-			if healthTicker != nil { healthTicker.Reset(time.Duration(cfg.Monitor.CheckIntervalSec) * time.Second) }
+			healthTicker.Reset(time.Duration(cfg.Monitor.CheckIntervalSec) * time.Second)
 			respChan <- true
 
 		case err := <-processDone:
 			LogWarn.Printf("Launcher process exited: %v", err)
-			if healthTicker != nil { healthTicker.Stop() }; return "exit", true
+			return "exit", true
 
 		case action := <-AdminActionChan:
 			LogInfo.Printf("Received admin action: %s", action)
 			if action == "shutdown" || action == "restart" {
-                // THE FIX: Use the new direct password field
 				if err := PostShutdown(cfg.RestAPI.Port, cfg.RestAPI.AdminPassword); err != nil {
 					LogWarn.Printf("Graceful shutdown failed: %v.", err)
 				}
 			}
-			if healthTicker != nil { healthTicker.Stop() }; return action, true
+			return action, true
 		}
 	}
 }
 
 // --- Helper Functions ---
-func ensureProcessStopped(cfg *Config) {
-	realServerExe := cfg.Server.RealExecutableName
-	if isProcessRunningByName(realServerExe) {
-		forceKillProcessByName(realServerExe)
-		LogInfo.Printf("Waiting for process %s to terminate...", realServerExe)
-		for i := 0; i < 15; i++ {
-			if !isProcessRunningByName(realServerExe) { LogSuccess.Printf("Process %s terminated.", realServerExe); return }
-			time.Sleep(1 * time.Second)
-		}
-		LogError.Printf("Process %s failed to terminate.", realServerExe)
+func ensureProcessTreeStopped(pid int) {
+	LogWarn.Printf("Executing forceful taskkill on PID %d and its children...", pid)
+	cmd := exec.Command("taskkill", "/F", "/PID", strconv.Itoa(pid), "/T")
+	if err := cmd.Run(); err != nil {
+		LogWarn.Printf("Taskkill command failed (process may have already ended): %v", err)
 	} else {
-		LogInfo.Printf("Process %s already exited.", realServerExe)
+		LogSuccess.Printf("Process tree for PID %d terminated.", pid)
 	}
 }
-func forceKillProcessByName(executableName string) error {
-	LogWarn.Printf("Executing forceful taskkill on executable: %s", executableName)
-	cmd := exec.Command("taskkill", "/F", "/IM", executableName, "/T")
-	return cmd.Run()
-}
-func isProcessRunningByName(executableName string) bool {
-	cmd := exec.Command("tasklist", "/FI", fmt.Sprintf("IMAGENAME eq %s", executableName))
-	output, err := cmd.Output()
-	if err != nil { return false }
-	return strings.Contains(string(output), executableName)
-}
 
+// runHealthCheck performs a check against the server's REST API endpoints.
+// THIS IS THE FUNCTION THAT WAS ACCIDENTALLY DELETED. IT IS NOW RESTORED.
 func runHealthCheck(cfg *Config) (bool, error) {
-    // THE FIX: Use the new direct password field
-	pw := cfg.RestAPI.AdminPassword 
-
+	pw := cfg.RestAPI.AdminPassword
 	metrics, metricsErr := GetAPIMetrics(cfg.RestAPI.Port, pw)
-	
 	if metricsErr != nil && strings.Contains(metricsErr.Error(), "Unauthorized") {
 		state.SetStatus("Config Error")
 		return false, metricsErr
 	}
-
 	players, playersErr := GetAPIPlayers(cfg.RestAPI.Port, pw)
 	settings, settingsErr := GetAPISettings(cfg.RestAPI.Port, pw)
-	
 	if metricsErr != nil || playersErr != nil || settingsErr != nil {
 		LogWarn.Printf("Health check failed. Errors: %v, %v, %v", metricsErr, playersErr, settingsErr)
 		state.SetStatus("Unhealthy")
 		return false, nil
 	}
-	
 	LogSuccess.Printf("Health check successful. FPS: %d, Players: %d/%d", metrics.ServerFPS, metrics.PlayerCount, metrics.MaxPlayers)
 	state.UpdateFullState("Healthy", settings.ServerName, players.Players, metrics.MaxPlayers, metrics.ServerFPS, metrics.Uptime)
 	return true, nil

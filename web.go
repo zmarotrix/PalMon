@@ -212,11 +212,23 @@ func formatUptime(s uint64) string {
 
 func handleGetSettings(cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		settings, err := ParseINI(cfg.Server.Path)
+		// Try to load our desired settings first.
+		settings, err := LoadPalMonSettings()
+		
+		// If our file doesn't exist yet (first time running), read the live .ini file...
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			LogInfo.Println("PalMon settings file not found, creating from PalWorldSettings.ini...")
+			settings, err = ParseINI(cfg.Server.Path)
+			if err != nil {
+				http.Error(w, "Could not parse PalWorldSettings.ini: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			// ...and save it as our new master copy.
+			if err := SavePalMonSettings(settings); err != nil {
+				LogWarn.Printf("Failed to create initial PalMon settings file: %v", err)
+			}
 		}
+
 		json.NewEncoder(w).Encode(settings)
 	}
 }
@@ -228,11 +240,15 @@ func handleSaveSettings(cfg *Config) http.HandlerFunc {
 			http.Error(w, "Invalid JSON", http.StatusBadRequest)
 			return
 		}
-		if err := SaveINI(cfg.Server.Path, settings); err != nil {
+
+		// This now ONLY saves to our PalMonServerSettings.json file.
+		// It no longer touches the live .ini file.
+		if err := SavePalMonSettings(settings); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		LogSuccess.Println("Admin successfully updated PalWorldSettings.ini and created a backup.")
+
+		LogSuccess.Println("Admin updated the desired server settings. They will be applied on the next server start.")
 		w.WriteHeader(http.StatusOK)
 	}
 }

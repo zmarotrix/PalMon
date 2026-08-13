@@ -2,7 +2,13 @@
   "server": {
     "path": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PalServer",
     "executable": "PalServer.exe",
-    "real_executable_name": "PalServer-Win64-Shipping-Cmd.exe"
+    "real_executable_name": "PalServer-Win64-Shipping-Cmd.exe",
+    "arguments": [
+      "-useperfthreads",
+      "-NoAsyncLoadingThread",
+      "-UseMultithreadForDS",
+      "-EpicApp=PalServer"
+    ]
   },
   "monitor": {
     "startup_delay_seconds": 30,

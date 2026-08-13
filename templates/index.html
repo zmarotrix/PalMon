@@ -81,22 +81,6 @@
                     <input type="text" id="broadcast-message" placeholder="Send a message to all players...">
                     <button onclick="broadcast()">Announce</button>
                 </div>
-                
-                <!-- NEW SETTINGS EDITOR BLOCK -->
-                <hr style="border-color: var(--border); margin: 1.5rem 0;">
-                <h3>Server Configuration Editor</h3>
-                <p style="font-size: 0.9em; color: var(--text-muted); margin-top: -10px;">Edits PalWorldSettings.ini directly. A backup is automatically created.</p>
-                <button onclick="openSettingsEditor()" style="background-color: #555; color: var(--text); border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer;">Load & Edit Settings</button>
-                
-                <div id="settings-editor" style="display: none; margin-top: 15px; background: #222; padding: 15px; border-radius: 8px; border: 1px solid var(--border);">
-                    <div id="settings-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; max-height: 400px; overflow-y: auto; margin-bottom: 15px; padding-right: 10px;"></div>
-                    <div class="server-actions">
-                        <button class="shutdown" onclick="document.getElementById('settings-editor').style.display='none'">Cancel</button>
-                        <button class="start" onclick="saveSettings()">Save & Backup</button>
-                    </div>
-                </div>
-                <!-- END SETTINGS EDITOR BLOCK -->
-
                 <hr style="border-color: var(--border); margin: 1.5rem 0;">
                 <div class="server-actions">
                     <button id="refresh-button" class="refresh-now" onclick="manualRefresh()">Refresh Now</button>
@@ -105,6 +89,22 @@
                 </div>
             </div>
             <div id="admin-actions-stopped" style="display: none;">
+                <!-- This is the new home for the settings editor -->
+                <h3>Server Configuration Editor</h3>
+                <p style="font-size: 0.9em; color: var(--text-muted); margin-top: -10px;">You can safely edit server settings while the server is offline.</p>
+                <button onclick="openSettingsEditor()" style="background-color: #555; color: var(--text); border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; width: 100%; margin-bottom: 1rem;">Load & Edit PalWorldSettings.ini</button>
+                
+                <div id="settings-editor" style="display: none; margin-top: 15px; background: #222; padding: 15px; border-radius: 8px; border: 1px solid var(--border);">
+                    <div id="settings-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; max-height: 400px; overflow-y: auto; margin-bottom: 15px; padding-right: 10px;"></div>
+                    <div class="server-actions">
+                        <button class="shutdown" onclick="document.getElementById('settings-editor').style.display='none'">Cancel</button>
+                        <button class="start" onclick="saveSettings()">Save Settings</button>
+                    </div>
+                </div>
+                <!-- End of editor -->
+
+                <hr style="border-color: var(--border); margin: 1.5rem 0;">
+
                 <p>Server is currently offline. You can start it now.</p>
                 <div class="server-actions">
                     <button class="start" onclick="startServer()">Start Server</button>
@@ -289,7 +289,8 @@
         }
         
         async function saveSettings() {
-            if(!confirm("This will overwrite your PalWorldSettings.ini file and create a backup. The server MUST be restarted for changes to take effect. Continue?")) return;
+            // New, simpler confirmation message
+            if(!confirm("This will overwrite your PalWorldSettings.ini file and create a backup. The new settings will be applied when you start the server. Continue?")) return;
             
             const inputs = document.querySelectorAll('#settings-grid input');
             const newSettings = {};
@@ -299,7 +300,8 @@
             
             const success = await postAction('/actions/settings_save', newSettings);
             if (success) {
-                alert("Settings saved and backup created! Please restart the server from the admin panel to apply your changes.");
+                // New, simpler success message
+                alert("Settings saved successfully! Click 'Start Server' to launch with your new configuration.");
                 document.getElementById('settings-editor').style.display = 'none';
             }
         }
